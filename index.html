@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="スタート呼出">
+  <meta name="theme-color" content="#0369a1">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <title>スタートエリア アナウンス（オフライン）</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f7fb; --card: #ffffff; --ink: #0f172a; --sub: #475569; --line: #cbd5e1;
+      --accent: #0369a1; --accent-weak: #e0f2fe; --ok: #15803d; --ok-weak: #dcfce7;
+      --warn: #b45309; --warn-weak: #fef3c7; --bad: #b91c1c; --bad-weak: #fee2e2;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; padding: 16px;
+      padding-top: calc(16px + env(safe-area-inset-top));
+      font-family: -apple-system, 'Segoe UI', 'Hiragino Kaku Gothic ProN', 'Meiryo', sans-serif;
+      color: var(--ink); background: var(--bg);
+      -webkit-text-size-adjust: 100%;
+    }
+    .app { max-width: 720px; margin: 0 auto; background: var(--card); border: 1px solid var(--line);
+      border-radius: 16px; padding: 16px; box-shadow: 0 10px 30px rgb(15 23 42 / 0.08); }
+    h1 { margin: 0 0 8px; font-size: 1.3rem; }
+    .status { margin-bottom: 8px; color: var(--sub); font-weight: 600; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 0.85rem; font-weight: 600; margin: 0 6px 8px 0; }
+    .badge.ok { background: var(--ok-weak); color: var(--ok); }
+    .badge.warn { background: var(--warn-weak); color: var(--warn); }
+    .badge.bad { background: var(--bad-weak); color: var(--bad); }
+    .notice { display: none; margin: 8px 0; padding: 10px 12px; border-radius: 10px; font-size: 0.9rem;
+      border: 1px solid var(--warn); background: var(--warn-weak); color: var(--warn); }
+    .notice.show { display: block; }
+    .panel { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: #f8fafc; margin-bottom: 12px; }
+    .panel label { display: block; margin-bottom: 6px; font-size: 0.9rem; color: var(--sub); }
+    .row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+    .row:last-child { margin-bottom: 0; }
+    select { flex: 1; min-width: 160px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 1rem; background: #fff; }
+    button { border: 1px solid var(--accent); background: var(--accent-weak); color: var(--accent);
+      border-radius: 10px; padding: 12px 16px; font-size: 1rem; font-weight: 700; cursor: pointer; }
+    button.primary { background: var(--accent); color: #fff; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .big { font-size: 2.4rem; font-weight: 700; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
+    .metrics { font-size: 0.95rem; color: var(--sub); margin-bottom: 12px; }
+    .metrics div { margin-bottom: 4px; }
+    progress { width: 100%; height: 10px; }
+    .log { width: 100%; height: 200px; margin: 0; padding: 10px; border: 1px solid var(--line); border-radius: 10px;
+      background: #0b1220; color: #e2e8f0; overflow: auto; font-family: Menlo, Consolas, monospace; font-size: 0.8rem;
+      line-height: 1.4; white-space: pre-wrap; }
+    small { color: var(--sub); }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <h1>スタートエリア アナウンス</h1>
+    <div id="status" class="status">状態: 停止中</div>
+    <div>
+      <span id="badge-net" class="badge warn">通信: --</span>
+      <span id="badge-cache" class="badge warn">音声: 未確認</span>
+      <span id="badge-wake" class="badge warn">画面: --</span>
+    </div>
+    <div id="notice" class="notice"></div>
+
+    <div class="panel">
+      <div class="big" id="clock">--:--:--</div>
+      <div class="metrics">
+        <div>次回アナウンス: <span id="next-run">--</span></div>
+        <div>呼び出し: <span id="lead-info">--</span> ／ 収録範囲: <span id="range-info">--</span></div>
+      </div>
+      <div class="row">
+        <button id="start" class="primary">開始</button>
+        <button id="stop" disabled>停止</button>
+        <button id="test">テスト</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <label for="voice">音声</label>
+      <div class="row"><select id="voice"></select></div>
+      <div class="row">
+        <button id="cache-all">オフライン用に保存</button>
+        <small id="cache-info">（会場へ行く前に、ネットのある所で一度押してください）</small>
+      </div>
+      <progress id="cache-progress" value="0" max="1" hidden></progress>
+      <label for="delay">時報からの遅れ</label>
+      <div class="row">
+        <select id="delay">
+          <option value="0">0秒（00秒ちょうど）</option>
+          <option value="2">2秒</option>
+          <option value="3" selected>3秒</option>
+          <option value="5">5秒</option>
+          <option value="10">10秒</option>
+        </select>
+      </div>
+      <div class="row">
+        <label style="margin:0; color:var(--ink);">
+          <input id="dry-run" type="checkbox"> 再生なし（表示のみ）
+        </label>
+      </div>
+      <div class="row">
+        <label style="margin:0; color:var(--ink);">
+          <input id="demo" type="checkbox"> デモ（収録範囲外の時刻でも、同じ「分」の収録音声を鳴らす）
+        </label>
+      </div>
+    </div>
+
+    <pre id="log" class="log"></pre>
+    <p><small>音声: VOICEVOX（各キャラクターのクレジットは音声選択欄を参照）。画面が消えると止まるので、当日は自動ロックを「なし」にしてください。</small></p>
+  </main>
+
+  <script>
+    (() => {
+      // ---------- 設定 ----------
+      const EMB = window.EMBEDDED || null; // Android 単一ファイル版では音声を埋め込んである
+      const VOICES = (EMB && EMB.voices) || [
+        { id: 'no7',    label: 'No.7（アナウンス）  VOICEVOX:No.7' },
+        { id: 'ryusei', label: '青山龍星（ノーマル）  VOICEVOX:青山龍星' },
+      ];
+      const CLIP_BASE = 'clips/';
+      const CACHE_NAME = 'start-announce-clips-v5';
+
+      // ---------- 要素 ----------
+      const $ = (id) => document.getElementById(id);
+      const statusEl = $('status'), noticeEl = $('notice'), voiceEl = $('voice');
+      const startBtn = $('start'), stopBtn = $('stop'), testBtn = $('test');
+      const clockEl = $('clock'), nextRunEl = $('next-run'), logEl = $('log');
+      const dryRunEl = $('dry-run'), delayEl = $('delay'), demoEl = $('demo'), cacheBtn = $('cache-all'), cacheInfo = $('cache-info'), cacheProg = $('cache-progress');
+      const badgeNet = $('badge-net'), badgeCache = $('badge-cache'), badgeWake = $('badge-wake');
+
+      // ---------- 状態 ----------
+      let running = false, timerId = null, index = null, wakeLock = null;
+      let audioCtx = null, currentSource = null;
+      const decoded = new Map(); // key -> AudioBuffer（直近数分だけ保持）
+      const logLines = [];
+
+      // ---------- ユーティリティ ----------
+      const pad = (n) => String(n).padStart(2, '0');
+      function fmt(d) { return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
+      function keyOf(d) { return pad(d.getHours()) + pad(d.getMinutes()); }
+      function appendLog(msg, d = new Date()) {
+        logLines.unshift(`[${fmt(d)}] ${msg}`);
+        if (logLines.length > 200) logLines.length = 200;
+        logEl.textContent = logLines.join('\n');
+      }
+      function notice(text) { noticeEl.textContent = text; noticeEl.classList.toggle('show', Boolean(text)); }
+      function setBadge(el, cls, text) { el.className = 'badge ' + cls; el.textContent = text; }
+      function clipUrl(key, voice = voiceEl.value) { return `${CLIP_BASE}${voice}/${key}.${(index && index.ext) || 'mp3'}`; }
+      function textOf(key) {
+        const c = index && index.clips.find((x) => x.key === key);
+        return c ? c.text : null;
+      }
+      function fallbackText(d) {
+        const lead = index ? index.lead : 3;
+        const t = new Date(d.getTime() + lead * 60000);
+        const a = d.getMinutes() === 0 ? `${d.getHours()}時` : `${d.getHours()}時${d.getMinutes()}分`;
+        const b = t.getMinutes() === 0 ? `${t.getHours()}時` : `${t.getHours()}時${t.getMinutes()}分`;
+        const yomi = { 2: 'にふんまえ', 3: 'さんぷんまえ', 4: 'よんぷんまえ', 5: 'ごふんまえ' }[lead] || `${lead}分前`;
+        return { display: `${a}になりました。${b}出走の方は、${lead}分前枠までお越しください。`,
+                 speech: `${a}になりました。${b}、しゅっそうのかたは、${yomi}わくまで、お越しください。` };
+      }
+
+      // ---------- 音声再生（Web Audio） ----------
+      function ensureAudio() {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        // iOS の再生ロック解除: 無音を一度鳴らす
+        const buf = audioCtx.createBuffer(1, 1, 22050);
+        const src = audioCtx.createBufferSource();
+        src.buffer = buf; src.connect(audioCtx.destination); src.start(0);
+      }
+
+      function b64ToBuf(b64) {
+        const bin = atob(b64), out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        return out.buffer;
+      }
+
+      async function fetchClip(key, voice) {
+        if (EMB) {
+          const b64 = EMB.clips[`${voice}/${key}`];
+          if (!b64) throw new Error(`clip not embedded: ${voice}/${key}`);
+          return b64ToBuf(b64);
+        }
+        const url = clipUrl(key, voice);
+        let res = null;
+        try {
+          const cache = await caches.open(CACHE_NAME);
+          res = await cache.match(url);
+        } catch (e) { /* Cache API 不可 */ }
+        if (!res) res = await fetch(url);
+        if (!res.ok) throw new Error(`clip not found: ${url}`);
+        return res.arrayBuffer();
+      }
+
+      async function getBuffer(key, voice = voiceEl.value) {
+        const k = `${voice}/${key}`;
+        if (decoded.has(k)) return decoded.get(k);
+        const ab = await fetchClip(key, voice);
+        const buf = await audioCtx.decodeAudioData(ab);
+        decoded.set(k, buf);
+        // 古いものを捨てる（5 個まで）
+        while (decoded.size > 5) decoded.delete(decoded.keys().next().value);
+        return buf;
+      }
+
+      function speakFallback(text) {
+        if (!('speechSynthesis' in window)) return false;
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = 'ja-JP';
+        const v = speechSynthesis.getVoices().filter((x) => x.lang.toLowerCase().startsWith('ja'));
+        const pick = v.find((x) => /Kyoko|O-ren|Hattori|Google 日本語|Nanami|Keita/i.test(x.name)) || v[0];
+        if (pick) u.voice = pick;
+        speechSynthesis.cancel();
+        speechSynthesis.speak(u);
+        return true;
+      }
+
+      // 実時刻 d に対して鳴らすクリップを決める（デモ時は同じ「分」の収録クリップで代用）
+      function clipFor(d) {
+        const key = keyOf(d);
+        if (textOf(key)) return { key, text: textOf(key), demo: false };
+        if (demoEl.checked && index) {
+          const mm = pad(d.getMinutes());
+          const c = index.clips.find((x) => x.key.slice(2) === mm);
+          if (c) return { key: c.key, text: c.text, demo: true };
+        }
+        return { key, text: null, demo: false };
+      }
+
+      async function playFor(d, label = '') {
+        const clip = clipFor(d);
+        const { key, text } = clip;
+        if (text && clip.demo) appendLog(`${label}${text}（デモ: 実時刻 ${fmt(d).slice(0, 5)}）`, d);
+        else if (text) appendLog(`${label}${text}`, d);
+        else appendLog(`${label}${fallbackText(d).display}（収録範囲外・端末音声で代替）`, d);
+        if (dryRunEl.checked) return;
+
+        try {
+          if (!text) throw new Error('out of range');
+          const buf = await getBuffer(key);
+          if (currentSource) { try { currentSource.stop(); } catch (e) {} }
+          const src = audioCtx.createBufferSource();
+          src.buffer = buf; src.connect(audioCtx.destination); src.start(0);
+          currentSource = src;
+        } catch (e) {
+          appendLog(`音声ファイルを再生できません（${e.message}）。端末の音声で代替します。`);
+          if (!speakFallback(fallbackText(d).speech)) appendLog('端末の音声合成も使えません。');
+        }
+      }
+
+      function prefetch(d) {
+        const clip = clipFor(d);
+        if (!clip.text) return;
+        getBuffer(clip.key).catch(() => {});
+      }
+      function delaySec() { return Number(delayEl.value) || 0; }
+
+      // ---------- スケジュール ----------
+      function nextMinute() {
+        const n = new Date(); n.setSeconds(0, 0); n.setMinutes(n.getMinutes() + 1); return n;
+      }
+      function schedule() {
+        if (!running) return;
+        const next = nextMinute();
+        nextRunEl.textContent = fmt(next).slice(0, 5) + (delaySec() ? ` +${delaySec()}秒` : '');
+        clearTimeout(timerId);
+        timerId = setTimeout(tick, next.getTime() + delaySec() * 1000 - Date.now());
+        // 次の分の音声を先に読み込んでおく
+        setTimeout(() => prefetch(next), 500);
+      }
+      function tick() {
+        if (!running) return;
+        const now = new Date(Date.now() - delaySec() * 1000); // 遅らせた分を引いて「分」を決める
+        // 端末スリープ等で大きくずれた場合は読み飛ばす
+        if (now.getSeconds() > 20) {
+          appendLog(`遅延のため ${fmt(now).slice(0, 5)} のアナウンスを飛ばしました。`);
+        } else {
+          now.setSeconds(0, 0);
+          playFor(now);
+        }
+        schedule();
+      }
+
+      // ---------- Wake Lock ----------
+      async function acquireWakeLock() {
+        if (!('wakeLock' in navigator)) { setBadge(badgeWake, 'warn', '画面: 自動ロックを切ってください'); return; }
+        try {
+          wakeLock = await navigator.wakeLock.request('screen');
+          setBadge(badgeWake, 'ok', '画面: 常時点灯');
+          wakeLock.addEventListener('release', () => setBadge(badgeWake, 'warn', '画面: 点灯解除'));
+        } catch (e) {
+          setBadge(badgeWake, 'warn', '画面: 自動ロックを切ってください');
+        }
+      }
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          if (running) acquireWakeLock();
+          if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+        }
+      });
+
+      // ---------- 開始/停止/テスト ----------
+      function setUi() {
+        statusEl.textContent = running ? '状態: 稼働中' : '状態: 停止中';
+        startBtn.disabled = running; stopBtn.disabled = !running; voiceEl.disabled = running;
+        if (!running) nextRunEl.textContent = '--';
+      }
+      function start() {
+        if (running) return;
+        ensureAudio();
+        running = true; setUi();
+        appendLog(`開始（音声: ${(VOICES.find((v) => v.id === voiceEl.value) || {}).label || voiceEl.value}）。次の分境界から流します。`);
+        acquireWakeLock();
+        prefetch(nextMinute());
+        schedule();
+      }
+      function stop() {
+        if (!running) return;
+        running = false; clearTimeout(timerId); timerId = null;
+        if (currentSource) { try { currentSource.stop(); } catch (e) {} }
+        if ('speechSynthesis' in window) speechSynthesis.cancel();
+        if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+        setUi(); appendLog('停止しました。');
+      }
+      function test() {
+        ensureAudio();
+        const d = new Date(); d.setSeconds(0, 0);
+        playFor(d, 'テスト: ');
+      }
+
+      // ---------- オフライン保存 ----------
+      async function checkCache() {
+        if (EMB) {
+          const voice = voiceEl.value;
+          const n = index.clips.filter((c) => EMB.clips[`${voice}/${c.key}`]).length;
+          setBadge(badgeCache, n === index.clips.length ? 'ok' : 'warn', `音声: 内蔵 ${n}/${index.clips.length}`);
+          return;
+        }
+        if (!index || !('caches' in window)) { setBadge(badgeCache, 'warn', '音声: 保存状況 不明'); return; }
+        try {
+          const cache = await caches.open(CACHE_NAME);
+          const keys = await cache.keys();
+          const have = new Set(keys.map((r) => new URL(r.url).pathname.split('/').slice(-2).join('/')));
+          const voice = voiceEl.value;
+          const ext = index.ext || 'mp3';
+          const n = index.clips.filter((c) => have.has(`${voice}/${c.key}.${ext}`)).length;
+          if (n === index.clips.length) setBadge(badgeCache, 'ok', `音声: 保存済み ${n}/${index.clips.length}`);
+          else if (n === 0) setBadge(badgeCache, 'bad', `音声: 未保存（要ネット）`);
+          else setBadge(badgeCache, 'warn', `音声: 一部のみ ${n}/${index.clips.length}`);
+        } catch (e) { setBadge(badgeCache, 'warn', '音声: 保存状況 不明'); }
+      }
+      async function cacheAll() {
+        if (!index) return;
+        if (!('caches' in window)) { notice('この環境ではオフライン保存ができません（https で開いてください）。'); return; }
+        cacheBtn.disabled = true; cacheProg.hidden = false; cacheProg.value = 0;
+        const cache = await caches.open(CACHE_NAME);
+        const voice = voiceEl.value;
+        const urls = index.clips.map((c) => clipUrl(c.key, voice));
+        let done = 0, failed = 0;
+        for (const url of urls) {
+          if (!(await cache.match(url))) {
+            try { const r = await fetch(url, { cache: 'no-cache' }); if (r.ok) await cache.put(url, r); else failed++; }
+            catch (e) { failed++; }
+          }
+          cacheProg.value = ++done / urls.length;
+        }
+        try { await cache.add('clips/index.json'); } catch (e) {}
+        cacheProg.hidden = true; cacheBtn.disabled = false;
+        appendLog(failed ? `オフライン保存: ${urls.length - failed} 件保存、${failed} 件失敗（ネット接続を確認してもう一度）` : `オフライン保存: ${urls.length} 件すべて保存しました。`);
+        checkCache();
+      }
+
+      // ---------- 初期化 ----------
+      function updateNet() {
+        setBadge(badgeNet, navigator.onLine ? 'ok' : 'warn', navigator.onLine ? '通信: オンライン' : '通信: オフライン');
+      }
+      window.addEventListener('online', updateNet); window.addEventListener('offline', updateNet);
+
+      async function loadIndex() {
+        if (EMB) {
+          index = EMB.index;
+          $('lead-info').textContent = `${index.lead}分前枠`;
+          $('range-info').textContent = `${index.start}〜${index.end}`;
+          cacheBtn.hidden = true; cacheInfo.hidden = true;
+          return;
+        }
+        let res = null;
+        try { const c = await caches.open(CACHE_NAME); res = await c.match('clips/index.json'); } catch (e) {}
+        if (!res) res = await fetch('clips/index.json');
+        index = await res.json();
+        $('lead-info').textContent = `${index.lead}分前枠`;
+        $('range-info').textContent = `${index.start}〜${index.end}`;
+      }
+
+      VOICES.forEach((v) => { const o = document.createElement('option'); o.value = v.id; o.textContent = v.label; voiceEl.appendChild(o); });
+      try { const saved = localStorage.getItem('voice'); if (saved && VOICES.some((v) => v.id === saved)) voiceEl.value = saved; } catch (e) {}
+      voiceEl.addEventListener('change', () => { try { localStorage.setItem('voice', voiceEl.value); } catch (e) {} decoded.clear(); checkCache(); });
+      try { const sd = localStorage.getItem('delay'); if (sd !== null && [...delayEl.options].some((o) => o.value === sd)) delayEl.value = sd; } catch (e) {}
+      delayEl.addEventListener('change', () => { try { localStorage.setItem('delay', delayEl.value); } catch (e) {} if (running) schedule(); });
+      try { demoEl.checked = localStorage.getItem('demo') === '1'; } catch (e) {}
+      demoEl.addEventListener('change', () => { try { localStorage.setItem('demo', demoEl.checked ? '1' : '0'); } catch (e) {} });
+      startBtn.addEventListener('click', start);
+      stopBtn.addEventListener('click', stop);
+      testBtn.addEventListener('click', test);
+      cacheBtn.addEventListener('click', cacheAll);
+      setInterval(() => { clockEl.textContent = fmt(new Date()); }, 250);
+      updateNet(); setUi();
+
+      if (!EMB && location.protocol.startsWith('http') && 'serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js').catch((e) => appendLog(`Service Worker 登録失敗: ${e.message}`));
+      }
+
+      loadIndex().then(() => { appendLog(`準備完了。「テスト」で音を確認し、「開始」で稼働します。`); checkCache(); })
+        .catch(() => { notice('音声一覧（clips/index.json）を読めません。ネットのある所で一度開き直してください。'); setBadge(badgeCache, 'bad', '音声: 一覧なし'); });
+    })();
+  </script>
+</body>
+</html>
