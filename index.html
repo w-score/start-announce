@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#0369a1">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icon-180.png">
-  <title>スタートエリア アナウンス（オフラインバージョン）</title>
+  <title>スタートエリア アナウンス（オフライン）</title>
   <style>
     :root {
       color-scheme: light;
@@ -122,7 +122,7 @@
         { id: 'ryusei', label: '青山龍星（ノーマル）  VOICEVOX:青山龍星' },
       ];
       const CLIP_BASE = 'clips/';
-      const CACHE_NAME = 'start-announce-clips-v5';
+      const CACHE_NAME = 'start-announce-clips-v7';
 
       // ---------- 要素 ----------
       const $ = (id) => document.getElementById(id);
@@ -134,8 +134,11 @@
 
       // ---------- 状態 ----------
       let running = false, timerId = null, index = null, wakeLock = null;
-      let audioCtx = null, currentSource = null;
-      const decoded = new Map(); // key -> AudioBuffer（直近数分だけ保持）
+      // 再生は <audio> 要素で行う（iPhone のサイレントスイッチ（消音）でも鳴るように。Web Audio は消音で止まる）
+      const player = new Audio();
+      player.preload = 'auto'; player.playsInline = true; player.setAttribute('playsinline', '');
+      const SILENT = 'data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
+      const urls = new Map(); // key -> blob URL（直近数分だけ保持）
       const logLines = [];
 
       // ---------- ユーティリティ ----------
@@ -164,14 +167,16 @@
                  speech: `${a}になりました。${b}、しゅっそうのかたは、${yomi}わくまで、お越しください。` };
       }
 
-      // ---------- 音声再生（Web Audio） ----------
+      // ---------- 音声再生（<audio> 要素） ----------
+      let unlocked = false;
       function ensureAudio() {
-        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        if (audioCtx.state === 'suspended') audioCtx.resume();
-        // iOS の再生ロック解除: 無音を一度鳴らす
-        const buf = audioCtx.createBuffer(1, 1, 22050);
-        const src = audioCtx.createBufferSource();
-        src.buffer = buf; src.connect(audioCtx.destination); src.start(0);
+        // ボタン操作の中で一度 play() しておくと、以後タイマーからの play() が許可される（iOS/Android/PC 共通）
+        if (unlocked) return;
+        try {
+          player.src = SILENT;
+          const p = player.play();
+          if (p && p.then) p.then(() => { unlocked = true; }).catch(() => {});
+        } catch (e) {}
       }
 
       function b64ToBuf(b64) {
@@ -197,15 +202,15 @@
         return res.arrayBuffer();
       }
 
-      async function getBuffer(key, voice = voiceEl.value) {
+      async function getUrl(key, voice = voiceEl.value) {
         const k = `${voice}/${key}`;
-        if (decoded.has(k)) return decoded.get(k);
+        if (urls.has(k)) return urls.get(k);
         const ab = await fetchClip(key, voice);
-        const buf = await audioCtx.decodeAudioData(ab);
-        decoded.set(k, buf);
+        const url = URL.createObjectURL(new Blob([ab], { type: (index && index.ext === 'wav') ? 'audio/wav' : 'audio/mpeg' }));
+        urls.set(k, url);
         // 古いものを捨てる（5 個まで）
-        while (decoded.size > 5) decoded.delete(decoded.keys().next().value);
-        return buf;
+        while (urls.size > 5) { const old = urls.keys().next().value; URL.revokeObjectURL(urls.get(old)); urls.delete(old); }
+        return url;
       }
 
       function speakFallback(text) {
@@ -242,12 +247,16 @@
 
         try {
           if (!text) throw new Error('out of range');
-          const buf = await getBuffer(key);
-          if (currentSource) { try { currentSource.stop(); } catch (e) {} }
-          const src = audioCtx.createBufferSource();
-          src.buffer = buf; src.connect(audioCtx.destination); src.start(0);
-          currentSource = src;
+          const url = await getUrl(key);
+          try { player.pause(); } catch (e) {}
+          player.src = url;
+          player.currentTime = 0;
+          await player.play();
         } catch (e) {
+          if (e && e.name === 'NotAllowedError') {
+            appendLog('再生がブラウザに止められました。「テスト」または「開始」を押し直してください。');
+            return;
+          }
           appendLog(`音声ファイルを再生できません（${e.message}）。端末の音声で代替します。`);
           if (!speakFallback(fallbackText(d).speech)) appendLog('端末の音声合成も使えません。');
         }
@@ -256,7 +265,7 @@
       function prefetch(d) {
         const clip = clipFor(d);
         if (!clip.text) return;
-        getBuffer(clip.key).catch(() => {});
+        getUrl(clip.key).catch(() => {});
       }
       function delaySec() { return Number(delayEl.value) || 0; }
 
@@ -300,7 +309,7 @@
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') {
           if (running) acquireWakeLock();
-          if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+          /* <audio> 要素は復帰時の再開処理が不要 */
         }
       });
 
@@ -322,7 +331,7 @@
       function stop() {
         if (!running) return;
         running = false; clearTimeout(timerId); timerId = null;
-        if (currentSource) { try { currentSource.stop(); } catch (e) {} }
+        try { player.pause(); } catch (e) {}
         if ('speechSynthesis' in window) speechSynthesis.cancel();
         if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
         setUi(); appendLog('停止しました。');
@@ -399,7 +408,7 @@
 
       VOICES.forEach((v) => { const o = document.createElement('option'); o.value = v.id; o.textContent = v.label; voiceEl.appendChild(o); });
       try { const saved = localStorage.getItem('voice'); if (saved && VOICES.some((v) => v.id === saved)) voiceEl.value = saved; } catch (e) {}
-      voiceEl.addEventListener('change', () => { try { localStorage.setItem('voice', voiceEl.value); } catch (e) {} decoded.clear(); checkCache(); });
+      voiceEl.addEventListener('change', () => { try { localStorage.setItem('voice', voiceEl.value); } catch (e) {} urls.forEach((u) => URL.revokeObjectURL(u)); urls.clear(); checkCache(); });
       try { const sd = localStorage.getItem('delay'); if (sd !== null && [...delayEl.options].some((o) => o.value === sd)) delayEl.value = sd; } catch (e) {}
       delayEl.addEventListener('change', () => { try { localStorage.setItem('delay', delayEl.value); } catch (e) {} if (running) schedule(); });
       try { demoEl.checked = localStorage.getItem('demo') === '1'; } catch (e) {}
