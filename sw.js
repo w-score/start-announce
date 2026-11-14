@@ -1,6 +1,6 @@
 // Service Worker: 同一オリジンの資源をキャッシュ優先で返す（オフライン動作用）
-const SHELL_CACHE = 'start-announce-shell-v7';
-const CLIP_CACHE = 'start-announce-clips-v7';
+const SHELL_CACHE = 'start-announce-shell-v8';
+const CLIP_CACHE = 'start-announce-clips-v8';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-512.png', './clips/index.json'];
 
 self.addEventListener('install', (e) => {
